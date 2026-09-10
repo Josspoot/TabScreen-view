@@ -7,6 +7,11 @@ struct Options {
     var hiDPI = false
     var port: UInt16 = 8420
     var bitrateMbps: Double?
+    /// Sin --res, la pantalla virtual adopta la resolución de la tablet.
+    var autoResolution = true
+
+    static let maxAutoWidth = 3840
+    static let maxAutoHeight = 2400
 
     static let presets: [(name: String, width: Int, height: Int)] = [
         ("hd", 1280, 800),
@@ -22,9 +27,10 @@ struct Options {
     Escanea el QR con la tablet (misma red) y se abre en el navegador.
 
     Opciones:
-      -r, --res <WxH|preset>  Resolución de la pantalla virtual (por defecto 1920x1200)
+      -r, --res <WxH|preset>  Resolución fija (por defecto: automática, la de la tablet)
                               Presets: hd=1280x800, fhd=1920x1080, wuxga=1920x1200, 2k=2560x1600
-          --hidpi             Modo Retina: la interfaz se ve a la mitad de tamaño (más nítida)
+          --hidpi             Modo Retina: la interfaz se ve a la mitad de tamaño (más nítida).
+                              En modo automático se activa solo en tablets de alta resolución.
           --fps <n>           Cuadros por segundo (por defecto 60)
           --bitrate <Mbps>    Bitrate del video (por defecto: automático según resolución)
       -p, --port <n>          Puerto HTTP (por defecto 8420)
@@ -51,6 +57,7 @@ struct Options {
             switch arg {
             case "-r", "--res":
                 let v = value(for: arg).lowercased()
+                options.autoResolution = false
                 if let preset = presets.first(where: { $0.name == v }) {
                     options.width = preset.width
                     options.height = preset.height

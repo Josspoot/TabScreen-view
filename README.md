@@ -24,21 +24,23 @@ Mac                                                   Tablet
 
 ```bash
 git clone https://github.com/Josspoot/TabScreen-view.git && cd TabScreen-view
-swift run -c release tabscreen --res 1920x1200
+swift run -c release tabscreen
 ```
 
 1. La primera vez macOS pedirá permiso de **Grabación de pantalla** para tu terminal. Actívalo en *Ajustes del Sistema → Privacidad y seguridad → Grabación de pantalla y audio del sistema* y vuelve a abrir la terminal.
 2. Aparece una pantalla nueva llamada **TabScreen**; acomódala en *Ajustes → Pantallas*.
 3. Escanea el QR de la terminal con la tablet y toca **Pantalla completa**.
 
-La página muestra la resolución real de tu tablet; úsala con `--res` para la máxima nitidez.
+Al conectarse, la pantalla virtual adopta la resolución física de la tablet. En tablets de alta resolución (lado largo ≥ 2400 px) usa HiDPI: por ejemplo, una tablet de 2880x1800 se ve como un monitor Retina de 1440x900.
+
+Toca fuera del panel para cerrarlo; toca dos veces la pantalla para volver a abrirlo.
 
 ### Opciones
 
 | Opción | Descripción | Por defecto |
 |---|---|---|
-| `-r, --res <WxH\|preset>` | Resolución. Presets: `hd` 1280x800, `fhd` 1920x1080, `wuxga` 1920x1200, `2k` 2560x1600 | `1920x1200` |
-| `--hidpi` | Modo Retina: la interfaz se ve a la mitad de tamaño, más nítida | desactivado |
+| `-r, --res <WxH\|preset>` | Resolución fija. Presets: `hd` 1280x800, `fhd` 1920x1080, `wuxga` 1920x1200, `2k` 2560x1600 | automática (la de la tablet) |
+| `--hidpi` | Modo Retina: la interfaz se ve a la mitad de tamaño, más nítida | automático |
 | `--fps <n>` | Cuadros por segundo | `60` |
 | `--bitrate <Mbps>` | Bitrate del video | automático |
 | `-p, --port <n>` | Puerto HTTP | `8420` |

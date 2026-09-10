@@ -176,18 +176,33 @@
 
   // --- Interfaz -----------------------------------------------------------
 
-  startBtn.addEventListener('click', async () => {
-    try { await document.documentElement.requestFullscreen({ navigationUI: 'hide' }); } catch (_) {}
-    try { await screen.orientation.lock('landscape'); } catch (_) {}
+  startBtn.addEventListener('click', async (event) => {
+    event.stopPropagation();
     overlay.hidden = true;
     video.play().catch(() => {});
+    try { await document.documentElement.requestFullscreen({ navigationUI: 'hide' }); } catch (_) {}
+    try { await screen.orientation.lock('landscape'); } catch (_) {}
   });
 
   showStats.addEventListener('change', () => { statsEl.hidden = !showStats.checked; });
 
-  document.addEventListener('dblclick', (event) => {
+  // Tocar fuera del panel lo cierra; doble toque en la pantalla lo vuelve a
+  // abrir. Se detecta a mano porque dblclick no siempre llega en táctiles.
+  let lastTap = 0;
+  document.addEventListener('pointerup', (event) => {
     if (event.target.closest('.card')) return;
-    overlay.hidden = !overlay.hidden;
+    if (!overlay.hidden) {
+      overlay.hidden = true;
+      lastTap = 0;
+      return;
+    }
+    const now = Date.now();
+    if (now - lastTap < 350) {
+      overlay.hidden = false;
+      lastTap = 0;
+    } else {
+      lastTap = now;
+    }
   });
 
   if (!token) {

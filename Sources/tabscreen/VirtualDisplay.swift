@@ -18,25 +18,41 @@ enum VirtualDisplayError: LocalizedError {
 /// este objeto (y el proceso) sigan vivos.
 final class VirtualDisplay {
     private let display: CGVirtualDisplay
+    private let refreshRate: Double
     let displayID: CGDirectDisplayID
 
-    init(name: String, width: Int, height: Int, refreshRate: Double, hiDPI: Bool) throws {
+    /// `maxWidth`x`maxHeight` es el tope en píxeles para `setResolution`.
+    init(name: String, maxWidth: Int, maxHeight: Int, refreshRate: Double) throws {
         let descriptor = CGVirtualDisplayDescriptor()
         descriptor.setDispatchQueue(DispatchQueue.main)
         descriptor.name = name
-        descriptor.maxPixelsWide = UInt32(width)
-        descriptor.maxPixelsHigh = UInt32(height)
+        descriptor.maxPixelsWide = UInt32(maxWidth)
+        descriptor.maxPixelsHigh = UInt32(maxHeight)
         // Tamaño físico aproximado (~110 ppi) para que macOS elija una escala razonable.
         let mmPerPixel = 25.4 / 110.0
-        descriptor.sizeInMillimeters = CGSize(width: Double(width) * mmPerPixel, height: Double(height) * mmPerPixel)
+        descriptor.sizeInMillimeters = CGSize(width: Double(maxWidth) * mmPerPixel, height: Double(maxHeight) * mmPerPixel)
         descriptor.vendorID = 0x7AB5
         descriptor.productID = 0x0001
-        descriptor.serialNum = 0x0001
 
-        guard let display = CGVirtualDisplay(descriptor: descriptor) else {
+        // macOS rechaza dos pantallas con el mismo número de serie (p. ej. otra
+        // instancia abierta). El serial 1 va primero para que macOS recuerde
+        // dónde acomodó el usuario la pantalla entre ejecuciones.
+        var created: CGVirtualDisplay?
+        for serial in UInt32(1)...8 where created == nil {
+            descriptor.serialNum = serial
+            created = CGVirtualDisplay(descriptor: descriptor)
+        }
+        guard let display = created else {
             throw VirtualDisplayError.creationFailed
         }
+        self.display = display
+        self.displayID = display.displayID
+        self.refreshRate = refreshRate
+    }
 
+    /// Cambia la resolución (se puede llamar en cualquier momento). En HiDPI la
+    /// interfaz se ve como la mitad de tamaño con `width`x`height` píxeles reales.
+    func setResolution(width: Int, height: Int, hiDPI: Bool) throws {
         let settings = CGVirtualDisplaySettings()
         settings.hiDPI = hiDPI ? 1 : 0
         var modes = [CGVirtualDisplayMode(width: UInt(width), height: UInt(height), refreshRate: refreshRate)]
@@ -46,8 +62,9 @@ final class VirtualDisplay {
         settings.modes = modes
         guard display.apply(settings) else { throw VirtualDisplayError.settingsRejected }
 
-        self.display = display
-        self.displayID = display.displayID
+        if !selectMode(width: width, height: height, hiDPI: hiDPI) {
+            print("⚠️  No se pudo activar el modo \(width)x\(height)\(hiDPI ? " HiDPI" : ""); se usa el que eligió macOS")
+        }
     }
 
     /// Tamaño en píxeles del modo actual (cambia si el usuario elige otra
@@ -59,8 +76,7 @@ final class VirtualDisplay {
 
     /// Activa el modo con exactamente `width`x`height` píxeles; en HiDPI, el
     /// que se ve como la mitad de tamaño.
-    @discardableResult
-    func selectMode(width: Int, height: Int, hiDPI: Bool) -> Bool {
+    private func selectMode(width: Int, height: Int, hiDPI: Bool) -> Bool {
         let options = [kCGDisplayShowDuplicateLowResolutionModes as String: true] as CFDictionary
         guard let modes = CGDisplayCopyAllDisplayModes(displayID, options) as? [CGDisplayMode] else { return false }
         let pointsWidth = hiDPI ? width / 2 : width

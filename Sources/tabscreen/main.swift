@@ -37,6 +37,7 @@ do {
 
 let pipeline = Pipeline(options: options, server: server)
 server.onKeyframeRequest = { pipeline.requestKeyframe() }
+server.onTabletScreen = { width, height in pipeline.adapt(toTabletWidth: width, height: height) }
 server.start()
 
 func printBanner() {
@@ -44,6 +45,9 @@ func printBanner() {
     let urls = addresses.map { "http://\($0.address):\(options.port)/?t=\(token)" }
     print("")
     print("🖥  Pantalla virtual lista: \(options.width)x\(options.height) @ \(options.fps) Hz\(options.hiDPI ? " (HiDPI)" : "")")
+    if options.autoResolution {
+        print("   Se ajustará sola a la resolución de la tablet al conectarse.")
+    }
     print("   Acomódala en Ajustes del Sistema → Pantallas.")
     print("")
     guard let url = urls.first else {

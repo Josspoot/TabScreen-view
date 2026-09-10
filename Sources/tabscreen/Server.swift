@@ -13,6 +13,8 @@ import Network
 ///  {"type":"hello","screen":"2560x1600",...}   {"type":"keyframe"}
 final class Server {
     var onKeyframeRequest: (() -> Void)?
+    /// Resolución física que reporta la tablet al conectarse.
+    var onTabletScreen: ((_ width: Int, _ height: Int) -> Void)?
 
     var clientCount: Int {
         countLock.lock()
@@ -298,7 +300,9 @@ final class Server {
             onKeyframeRequest?()
         case "hello":
             let screen = json["screen"] as? String ?? "?"
-            print("   Resolución de la tablet: \(screen) — para máxima nitidez usa: --res \(screen)")
+            print("   Resolución de la tablet: \(screen)")
+            let size = screen.split(separator: "x").compactMap { Int($0) }
+            if size.count == 2 { onTabletScreen?(size[0], size[1]) }
         default:
             break
         }

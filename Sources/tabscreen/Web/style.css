@@ -1,3 +1,8 @@
+/* Sin esto, reglas como #overlay { display: grid } ganan al atributo hidden. */
+[hidden] {
+  display: none !important;
+}
+
 html, body {
   margin: 0;
   height: 100%;

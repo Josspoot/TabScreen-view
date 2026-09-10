@@ -22,6 +22,7 @@ final class Pipeline {
     private(set) var display: VirtualDisplay?
     private let capturer = ScreenCapturer()
     private var captureSize = (width: 0, height: 0)
+    private var resolution = (width: 0, height: 0, hiDPI: false)   // solo en main
 
     private let encodeQueue = DispatchQueue(label: "tabscreen.encode", qos: .userInteractive)
     private var encoder: H264Encoder?      // solo en encodeQueue
@@ -43,12 +44,13 @@ final class Pipeline {
     @MainActor
     func start() async throws {
         let display = try VirtualDisplay(
-            name: "TabScreen", width: options.width, height: options.height,
-            refreshRate: Double(options.fps), hiDPI: options.hiDPI)
+            name: "TabScreen",
+            maxWidth: options.autoResolution ? Options.maxAutoWidth : options.width,
+            maxHeight: options.autoResolution ? Options.maxAutoHeight : options.height,
+            refreshRate: Double(options.fps))
         self.display = display
-        if !display.selectMode(width: options.width, height: options.height, hiDPI: options.hiDPI) {
-            print("⚠️  No se pudo activar el modo \(options.width)x\(options.height)\(options.hiDPI ? " HiDPI" : ""); se usa el que eligió macOS")
-        }
+        try display.setResolution(width: options.width, height: options.height, hiDPI: options.hiDPI)
+        resolution = (options.width, options.height, options.hiDPI)
 
         let scDisplay = try await waitForShareableDisplay(display.displayID)
         let size = display.currentPixelSize ?? (options.width, options.height)
@@ -69,6 +71,37 @@ final class Pipeline {
 
     func requestKeyframe() {
         encodeQueue.async { self.forceKeyframe = true }
+    }
+
+    /// En modo automático la pantalla virtual adopta la resolución física de
+    /// la tablet. En tablets de alta densidad usa HiDPI para que el texto no
+    /// se vea diminuto. La captura y el codificador se adaptan solos.
+    func adapt(toTabletWidth tabletWidth: Int, height tabletHeight: Int) {
+        DispatchQueue.main.async {
+            guard let display = self.display else { return }
+            guard self.options.autoResolution else {
+                if (tabletWidth, tabletHeight) != (self.resolution.width, self.resolution.height) {
+                    print("   Para máxima nitidez usa: --res \(tabletWidth)x\(tabletHeight)")
+                }
+                return
+            }
+
+            let scale = min(1, Double(Options.maxAutoWidth) / Double(tabletWidth),
+                            Double(Options.maxAutoHeight) / Double(tabletHeight))
+            let width = Int(Double(tabletWidth) * scale) / 4 * 4
+            let height = Int(Double(tabletHeight) * scale) / 4 * 4
+            let hiDPI = self.options.hiDPI || max(width, height) >= 2400
+            guard width >= 640, height >= 480, (width, height, hiDPI) != self.resolution else { return }
+
+            do {
+                try display.setResolution(width: width, height: height, hiDPI: hiDPI)
+                self.resolution = (width, height, hiDPI)
+                let looksLike = hiDPI ? " (HiDPI, se ve como \(width / 2)x\(height / 2))" : ""
+                print("📐 Pantalla virtual ajustada a la tablet: \(width)x\(height)\(looksLike)")
+            } catch {
+                print("⚠️  No se pudo ajustar la resolución: \(error.localizedDescription)")
+            }
+        }
     }
 
     private func waitForShareableDisplay(_ id: CGDirectDisplayID) async throws -> SCDisplay {
