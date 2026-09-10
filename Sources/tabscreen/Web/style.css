@@ -1,0 +1,77 @@
+html, body {
+  margin: 0;
+  height: 100%;
+  background: #000;
+  color: #f2f2f2;
+  font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  overflow: hidden;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#screen {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+  pointer-events: none;
+}
+
+#overlay {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.55);
+  padding: 16px;
+}
+
+.card {
+  max-width: 420px;
+  padding: 24px 28px;
+  border-radius: 16px;
+  background: rgba(28, 28, 30, 0.92);
+  text-align: center;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+}
+
+h1 {
+  margin: 0 0 8px;
+  font-size: 24px;
+}
+
+#status {
+  margin: 0 0 20px;
+  color: #c7c7cc;
+}
+
+button {
+  width: 100%;
+  padding: 14px;
+  border: 0;
+  border-radius: 12px;
+  background: #0a84ff;
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+}
+
+.hint {
+  margin: 14px 0 0;
+  font-size: 13px;
+  color: #8e8e93;
+}
+
+#stats {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.6);
+  font: 12px/1.3 ui-monospace, Menlo, monospace;
+  white-space: pre;
+}

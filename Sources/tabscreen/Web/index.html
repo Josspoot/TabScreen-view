@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="theme-color" content="#000000">
+  <title>TabScreen</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <video id="screen" muted playsinline autoplay disablepictureinpicture></video>
+
+  <div id="overlay">
+    <div class="card">
+      <h1>TabScreen</h1>
+      <p id="status">Conectando…</p>
+      <button id="start">Pantalla completa</button>
+      <p id="device" class="hint"></p>
+      <label class="hint"><input type="checkbox" id="show-stats"> Mostrar estadísticas</label>
+      <p class="hint">Toca dos veces la pantalla para mostrar u ocultar este panel.</p>
+    </div>
+  </div>
+
+  <div id="stats" hidden></div>
+
+  <script src="fmp4.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
