@@ -9,22 +9,41 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <video id="screen" muted playsinline autoplay disablepictureinpicture></video>
+  <video id="video" class="screen" muted playsinline autoplay disablepictureinpicture></video>
+  <canvas id="canvas" class="screen" hidden></canvas>
 
   <div id="overlay">
     <div class="card">
       <h1>TabScreen</h1>
       <p id="status">Conectando…</p>
-      <button id="start">Pantalla completa</button>
+
+      <div id="pair" hidden>
+        <p class="label">Código de verificación</p>
+        <div id="pair-code" class="code"></div>
+        <p class="hint">Escríbelo en la ventana que apareció en la Mac para permitir la conexión.</p>
+      </div>
+
+      <div id="controls" hidden>
+        <button id="start">Pantalla completa</button>
+        <p class="label">¿Dónde está esta pantalla respecto a tu Mac?</p>
+        <div class="positions">
+          <button class="secondary" data-side="left">← Izquierda</button>
+          <button class="secondary" data-side="right">Derecha →</button>
+          <button class="secondary" data-side="above">↑ Arriba</button>
+          <button class="secondary" data-side="below">↓ Abajo</button>
+        </div>
+        <label class="hint"><input type="checkbox" id="show-stats"> Mostrar estadísticas</label>
+        <p class="hint">Toca fuera de este panel para cerrarlo; toca dos veces la pantalla para volver a abrirlo.</p>
+      </div>
+
       <p id="device" class="hint"></p>
-      <label class="hint"><input type="checkbox" id="show-stats"> Mostrar estadísticas</label>
-      <p class="hint">Toca fuera de este panel para cerrarlo; toca dos veces la pantalla para volver a abrirlo.</p>
     </div>
   </div>
 
   <div id="stats" hidden></div>
 
   <script src="fmp4.js"></script>
+  <script src="players.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

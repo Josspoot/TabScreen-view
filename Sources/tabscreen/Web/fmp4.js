@@ -37,11 +37,16 @@ const FMP4 = (() => {
     return 'avc1.' + [sps[1], sps[2], sps[3]].map((b) => b.toString(16).padStart(2, '0')).join('');
   }
 
-  function avcC(sps, pps) {
-    return box('avcC',
+  // AVCDecoderConfigurationRecord: el contenido de la caja avcC, y la
+  // "description" que pide WebCodecs.
+  function avcConfigRecord(sps, pps) {
+    return concat([
       [1, sps[1], sps[2], sps[3], 0xff /* NAL de 4 bytes */, 0xe1 /* 1 SPS */], u16(sps.length), sps,
-      [1], u16(pps.length), pps);
+      [1], u16(pps.length), pps,
+    ]);
   }
+
+  const avcC = (sps, pps) => box('avcC', avcConfigRecord(sps, pps));
 
   function initSegment({ width, height, sps, pps, timescale }) {
     const ftyp = box('ftyp', str('isom'), u32(0x200), str('isom'), str('iso6'), str('avc1'), str('mp41'));
@@ -84,5 +89,5 @@ const FMP4 = (() => {
     return concat([moof, box('mdat', data)]);
   }
 
-  return { codecString, initSegment, mediaSegment };
+  return { codecString, avcConfigRecord, initSegment, mediaSegment };
 })();
