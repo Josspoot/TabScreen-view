@@ -38,6 +38,9 @@ final class ScreenCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
         config.colorMatrix = CGDisplayStream.yCbCrMatrix_ITU_R_709_2
         config.queueDepth = 6
         config.showsCursor = true
+        if #available(macOS 14.0, *) {
+            config.scalesToFit = true // el video puede ser más chico que la pantalla
+        }
         return config
     }
 

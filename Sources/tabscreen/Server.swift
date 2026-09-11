@@ -2,20 +2,45 @@ import CryptoKit
 import Foundation
 import Network
 
+struct DeviceInfo {
+    let id: String
+    let name: String
+    let address: String
+}
+
+enum AuthResult {
+    case allowed
+    case rejected(String)
+}
+
 /// Servidor HTTP + WebSocket mínimo en un solo puerto.
 ///  - GET /, /app.js, ... → archivos del cliente web
-///  - GET /ws?t=TOKEN     → WebSocket con el video
+///  - GET /ws?t=TOKEN     → WebSocket (control + video)
 ///
-/// Mensajes binarios servidor → cliente:
+/// Al abrir el WebSocket el cliente se presenta con "hello" y solo recibe
+/// video cuando `onAuthorize` lo aprueba.
+///
+/// Binario servidor → cliente:
 ///  0x01 config: [u16 ancho][u16 alto][u8 fps][u16 len][SPS][u16 len][PPS]
 ///  0x02 cuadro: [u8 flags (bit0 = keyframe)][u64 pts µs][AVCC]
-/// Mensajes de texto cliente → servidor (JSON):
-///  {"type":"hello","screen":"2560x1600",...}   {"type":"keyframe"}
+/// Texto (JSON) servidor → cliente:
+///  {"type":"pair","code":"123456"}  {"type":"approved"}  {"type":"rejected","reason":"…"}
+///  {"type":"position","side":"left"}
+/// Texto (JSON) cliente → servidor:
+///  {"type":"hello","deviceId":"…","name":"…","screen":"2560x1600"}
+///  {"type":"keyframe"}  {"type":"position","side":"left|right|above|below"}
+///  {"type":"stats","mode":"WebCodecs|MSE","received":60,"shown":58,"dropped":2,"lag":80}
 final class Server {
     var onKeyframeRequest: (() -> Void)?
-    /// Resolución física que reporta la tablet al conectarse.
+    /// Resolución física que reporta un dispositivo ya aprobado.
     var onTabletScreen: ((_ width: Int, _ height: Int) -> Void)?
+    var onPosition: ((DisplayPosition) -> Void)?
+    /// Decide si un dispositivo puede ver la pantalla; `sendCode` muestra un
+    /// código de verificación en el dispositivo. Sin esto se permite a todos.
+    var onAuthorize: ((DeviceInfo, _ sendCode: @escaping (String) -> Void,
+                       _ completion: @escaping (AuthResult) -> Void) -> Void)?
 
+    /// Dispositivos aprobados conectados.
     var clientCount: Int {
         countLock.lock()
         defer { countLock.unlock() }
@@ -24,23 +49,31 @@ final class Server {
 
     private final class Client {
         let connection: NWConnection
+        let address: String
         var buffer: [UInt8] = []
         var isWebSocket = false
         var closed = false
+        var device: DeviceInfo?
+        var screen: (width: Int, height: Int)?
+        var authorized = false
         var bytesInFlight = 0
         var waitingForKeyframe = true
         var needsKeyframeRequest = false
 
-        init(connection: NWConnection) { self.connection = connection }
+        init(connection: NWConnection) {
+            self.connection = connection
+            self.address = Server.describe(connection.endpoint)
+        }
     }
 
     private static let webFiles: [String: String] = [
         "index.html": "text/html; charset=utf-8",
         "app.js": "text/javascript; charset=utf-8",
         "fmp4.js": "text/javascript; charset=utf-8",
+        "players.js": "text/javascript; charset=utf-8",
         "style.css": "text/css; charset=utf-8",
     ]
-    /// Si una tablet acumula más que esto sin enviar, se descartan cuadros
+    /// Si un dispositivo acumula más que esto sin enviar, se descartan cuadros
     /// hasta el siguiente keyframe (mejor saltar que acumular latencia).
     private static let maxBytesInFlight = 1_500_000
 
@@ -50,6 +83,7 @@ final class Server {
     private let queue = DispatchQueue(label: "tabscreen.server", qos: .userInteractive)
     private var clients: [ObjectIdentifier: Client] = [:]
     private var configMessage: Data?
+    private var positionMessage: Data?
     private let countLock = NSLock()
     private var _clientCount = 0
 
@@ -74,7 +108,7 @@ final class Server {
         listener.start(queue: queue)
     }
 
-    // MARK: - Video
+    // MARK: - Difusión
 
     func broadcastConfig(width: Int, height: Int, fps: Int, sps: Data, pps: Data) {
         var msg = Data([0x01])
@@ -88,7 +122,7 @@ final class Server {
         let framed = Self.webSocketFrame(opcode: 0x2, payload: msg)
         queue.async {
             self.configMessage = framed
-            for client in self.clients.values {
+            for client in self.clients.values where client.authorized {
                 client.waitingForKeyframe = true
                 self.send(framed, to: client)
             }
@@ -104,7 +138,7 @@ final class Server {
         let framed = Self.webSocketFrame(opcode: 0x2, payload: msg)
 
         queue.async {
-            for client in self.clients.values {
+            for client in self.clients.values where client.authorized {
                 if client.waitingForKeyframe {
                     guard frame.isKeyframe else { continue }
                     client.waitingForKeyframe = false
@@ -114,6 +148,16 @@ final class Server {
                     client.needsKeyframeRequest = true
                     continue
                 }
+                self.send(framed, to: client)
+            }
+        }
+    }
+
+    func broadcastPosition(_ position: DisplayPosition) {
+        let framed = Self.textFrame(["type": "position", "side": position.rawValue])
+        queue.async {
+            self.positionMessage = framed
+            for client in self.clients.values where client.authorized {
                 self.send(framed, to: client)
             }
         }
@@ -167,16 +211,66 @@ final class Server {
         guard !client.closed else { return }
         client.closed = true
         client.connection.cancel()
-        if clients.removeValue(forKey: ObjectIdentifier(client)) != nil {
-            setClientCount(clients.count)
-            print("📴 Tablet desconectada (\(clients.count) conectada(s))")
+        clients.removeValue(forKey: ObjectIdentifier(client))
+        if client.authorized {
+            let count = updateClientCount()
+            print("📴 \(client.device?.name ?? "Dispositivo") desconectado (\(count) conectado(s))")
         }
     }
 
-    private func setClientCount(_ count: Int) {
+    @discardableResult
+    private func updateClientCount() -> Int {
+        let count = clients.values.filter(\.authorized).count
         countLock.lock()
         _clientCount = count
         countLock.unlock()
+        return count
+    }
+
+    // MARK: - Autorización
+
+    private func authorize(_ client: Client, device: DeviceInfo) {
+        guard let onAuthorize else {
+            admit(client)
+            return
+        }
+        onAuthorize(device, { [weak self] code in
+            self?.queue.async {
+                self?.send(Self.textFrame(["type": "pair", "code": code]), to: client)
+            }
+        }, { [weak self] result in
+            self?.queue.async {
+                guard let self else { return }
+                switch result {
+                case .allowed: self.admit(client)
+                case .rejected(let reason): self.reject(client, reason: reason)
+                }
+            }
+        })
+    }
+
+    private func admit(_ client: Client) {
+        guard !client.closed, !client.authorized else { return }
+        client.authorized = true
+        let count = updateClientCount()
+        print("📱 \(client.device?.name ?? "Dispositivo") conectado desde \(client.address) (\(count) conectado(s))")
+
+        send(Self.textFrame(["type": "approved"]), to: client)
+        if let positionMessage { send(positionMessage, to: client) }
+        if let configMessage { send(configMessage, to: client) }
+        onKeyframeRequest?()
+        if let screen = client.screen {
+            print("   Resolución del dispositivo: \(screen.width)x\(screen.height)")
+            onTabletScreen?(screen.width, screen.height)
+        }
+    }
+
+    private func reject(_ client: Client, reason: String) {
+        guard !client.closed else { return }
+        let framed = Self.textFrame(["type": "rejected", "reason": reason])
+        client.connection.send(content: framed, completion: .contentProcessed { [weak self] _ in
+            self?.drop(client)
+        })
     }
 
     // MARK: - HTTP
@@ -245,18 +339,14 @@ final class Server {
             + "Sec-WebSocket-Accept: \(accept)\r\n\r\n"
         client.connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in })
 
+        // No recibe nada hasta presentarse con "hello" y ser aprobado.
         client.isWebSocket = true
         clients[ObjectIdentifier(client)] = client
-        setClientCount(clients.count)
-        print("📱 Tablet conectada desde \(Self.describe(client.connection.endpoint)) (\(clients.count) conectada(s))")
-
-        if let configMessage { send(configMessage, to: client) }
-        onKeyframeRequest?()
         if !client.buffer.isEmpty { parseWebSocketFrames(client) }
     }
 
     private func parseWebSocketFrames(_ client: Client) {
-        while true {
+        while !client.closed {
             let b = client.buffer
             guard b.count >= 2 else { return }
             let opcode = b[0] & 0x0F
@@ -284,7 +374,7 @@ final class Server {
             client.buffer.removeFirst(offset + length)
 
             switch opcode {
-            case 0x1: handleText(String(decoding: payload, as: UTF8.self))
+            case 0x1: handleText(String(decoding: payload, as: UTF8.self), from: client)
             case 0x8: drop(client); return
             case 0x9: send(Self.webSocketFrame(opcode: 0xA, payload: Data(payload)), to: client)
             default: break
@@ -292,20 +382,54 @@ final class Server {
         }
     }
 
-    private func handleText(_ text: String) {
+    private func handleText(_ text: String, from client: Client) {
         guard let json = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
               let type = json["type"] as? String else { return }
         switch type {
-        case "keyframe":
-            onKeyframeRequest?()
         case "hello":
-            let screen = json["screen"] as? String ?? "?"
-            print("   Resolución de la tablet: \(screen)")
-            let size = screen.split(separator: "x").compactMap { Int($0) }
-            if size.count == 2 { onTabletScreen?(size[0], size[1]) }
+            guard client.device == nil else { return }
+            guard let id = json["deviceId"] as? String, Self.isValidDeviceID(id) else {
+                reject(client, reason: "Recarga la página para conectarte.")
+                return
+            }
+            let device = DeviceInfo(id: id, name: Self.sanitizeName(json["name"] as? String), address: client.address)
+            client.device = device
+            let size = (json["screen"] as? String ?? "").split(separator: "x").compactMap { Int($0) }
+            if size.count == 2 { client.screen = (size[0], size[1]) }
+            authorize(client, device: device)
+        case "keyframe":
+            if client.authorized { onKeyframeRequest?() }
+        case "stats":
+            guard client.authorized, let device = client.device else { return }
+            let value = { (key: String) in (json[key] as? NSNumber)?.intValue ?? 0 }
+            let mode = (json["mode"] as? String).flatMap { ["WebCodecs", "MSE"].contains($0) ? $0 : nil } ?? "?"
+            print("📊 \(device.name) [\(mode)]: recibe \(value("received")) fps · muestra \(value("shown")) fps"
+                  + " · descarta \(value("dropped")) fps · retraso \(value("lag")) ms")
+        case "position":
+            guard client.authorized, let side = json["side"] as? String,
+                  let position = DisplayPosition(rawValue: side) else { return }
+            onPosition?(position)
         default:
             break
         }
+    }
+
+    // MARK: - Utilidades
+
+    private static func isValidDeviceID(_ id: String) -> Bool {
+        (16...64).contains(id.count) && id.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber) }
+    }
+
+    /// El nombre lo manda el dispositivo: se limita a caracteres seguros.
+    private static func sanitizeName(_ name: String?) -> String {
+        let allowed = (name ?? "").filter { $0.isLetter || $0.isNumber || " ·-_.()".contains($0) }
+        let trimmed = String(allowed.prefix(40)).trimmingCharacters(in: .whitespaces)
+        return trimmed.isEmpty ? "Dispositivo" : trimmed
+    }
+
+    private static func textFrame(_ object: [String: String]) -> Data {
+        let json = (try? JSONSerialization.data(withJSONObject: object)) ?? Data("{}".utf8)
+        return webSocketFrame(opcode: 0x1, payload: json)
     }
 
     private static func webSocketFrame(opcode: UInt8, payload: Data) -> Data {

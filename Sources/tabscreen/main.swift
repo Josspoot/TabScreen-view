@@ -4,6 +4,13 @@ import Foundation
 setvbuf(stdout, nil, _IOLBF, 0)
 
 let options = Options.parse(CommandLine.arguments)
+let store = Store()
+
+if options.forgetDevices {
+    let count = store.forgetDevices()
+    print("🗑  Se olvidaron \(count) dispositivo(s) de confianza y el próximo QR será nuevo.")
+    exit(0)
+}
 
 // Evita que macOS (App Nap / ahorro de energía) retrase los temporizadores
 // del codificador cuando la terminal no está en primer plano.
@@ -21,8 +28,7 @@ if !CGPreflightScreenCaptureAccess() {
     """)
 }
 
-let alphabet = Array("abcdefghijkmnpqrstuvwxyz23456789")
-let token = String((0..<10).map { _ in alphabet.randomElement()! })
+let token = store.token
 
 guard let webRoot = Bundle.module.url(forResource: "Web", withExtension: nil) else {
     fail("No se encontraron los archivos del cliente web")
@@ -35,20 +41,32 @@ do {
     fail("No se pudo abrir el puerto \(options.port): \(error)")
 }
 
-let pipeline = Pipeline(options: options, server: server)
+let pipeline = Pipeline(options: options, server: server, store: store)
+let pairing = Pairing(store: store)
+server.onAuthorize = pairing.authorize
 server.onKeyframeRequest = { pipeline.requestKeyframe() }
 server.onTabletScreen = { width, height in pipeline.adapt(toTabletWidth: width, height: height) }
+server.onPosition = { position in pipeline.place(position) }
 server.start()
+
+let usb = USBBridge(port: options.port, token: token, enabled: options.usb)
 
 func printBanner() {
     let addresses = Terminal.localIPv4Addresses()
     let urls = addresses.map { "http://\($0.address):\(options.port)/?t=\(token)" }
     print("")
-    print("🖥  Pantalla virtual lista: \(options.width)x\(options.height) @ \(options.fps) Hz\(options.hiDPI ? " (HiDPI)" : "")")
     if options.autoResolution {
-        print("   Se ajustará sola a la resolución de la tablet al conectarse.")
+        print("🖥  La pantalla virtual se creará al conectar la tablet, con su resolución.")
+    } else {
+        print("🖥  Pantalla virtual lista: \(options.width)x\(options.height) @ \(options.fps) Hz\(options.hiDPI ? " (HiDPI)" : "")")
     }
-    print("   Acomódala en Ajustes del Sistema → Pantallas.")
+    print("   Ubicación: \(pipeline.position.label) de la principal (cámbiala desde la tablet o con --position).")
+    print("🔐 Cada dispositivo nuevo debe confirmarse con un código en esta Mac. De confianza: \(store.trustedCount).")
+    if usb.isAvailable {
+        print("🔌 USB: conecta la tablet por cable (con Depuración USB activada) y TabScreen se abrirá sola.")
+    } else if options.usb {
+        print("🔌 Para conectar por cable instala adb:  brew install --cask android-platform-tools")
+    }
     print("")
     guard let url = urls.first else {
         print("⚠️  No se encontró ninguna red. Conecta la Mac al Wi-Fi.")
@@ -67,6 +85,7 @@ Task { @MainActor in
     do {
         try await pipeline.start()
         printBanner()
+        usb.start()
     } catch {
         print("❌ \(error.localizedDescription)")
         if !CGPreflightScreenCaptureAccess() {

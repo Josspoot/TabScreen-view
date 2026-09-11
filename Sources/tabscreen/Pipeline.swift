@@ -19,10 +19,13 @@ enum PipelineError: LocalizedError {
 final class Pipeline {
     private let options: Options
     private let server: Server
-    private(set) var display: VirtualDisplay?
+    private let store: Store
+    private(set) var display: VirtualDisplay?     // solo en main
+    private(set) var position: DisplayPosition   // solo en main
     private let capturer = ScreenCapturer()
-    private var captureSize = (width: 0, height: 0)
-    private var resolution = (width: 0, height: 0, hiDPI: false)   // solo en main
+    private var displayPixelSize = (width: 0, height: 0)   // solo en main
+    private var captureSize = (width: 0, height: 0)        // tamaño del video
+    private var displayWork: Task<Void, Never>?   // solo en main
 
     private let encodeQueue = DispatchQueue(label: "tabscreen.encode", qos: .userInteractive)
     private var encoder: H264Encoder?      // solo en encodeQueue
@@ -36,34 +39,22 @@ final class Pipeline {
     private var statFrames = 0
     private var statBytes = 0
 
-    init(options: Options, server: Server) {
+    init(options: Options, server: Server, store: Store) {
         self.options = options
         self.server = server
+        self.store = store
+        self.position = options.position ?? store.position ?? .right
     }
 
+    /// Con --res la pantalla virtual se crea ya; en modo automático se crea
+    /// cuando se conecta la tablet, directamente con su resolución.
     @MainActor
     func start() async throws {
-        let display = try VirtualDisplay(
-            name: "TabScreen",
-            maxWidth: options.autoResolution ? Options.maxAutoWidth : options.width,
-            maxHeight: options.autoResolution ? Options.maxAutoHeight : options.height,
-            refreshRate: Double(options.fps))
-        self.display = display
-        try display.setResolution(width: options.width, height: options.height, hiDPI: options.hiDPI)
-        resolution = (options.width, options.height, options.hiDPI)
-
-        let scDisplay = try await waitForShareableDisplay(display.displayID)
-        let size = display.currentPixelSize ?? (options.width, options.height)
-        captureSize = size
-
-        capturer.onFrame = { [weak self] pixelBuffer in
-            guard let self else { return }
-            self.bufferLock.lock()
-            self.latestBuffer = pixelBuffer
-            self.bufferLock.unlock()
+        capturer.onFrame = { [weak self] pixelBuffer in self?.setLatestBuffer(pixelBuffer) }
+        server.broadcastPosition(position)
+        if !options.autoResolution {
+            try await showDisplay(width: options.width, height: options.height, hiDPI: options.hiDPI)
         }
-        try await capturer.start(display: scDisplay, width: size.width, height: size.height, fps: options.fps)
-
         startFrameTimer()
         startModeWatcher()
         startStatsTimer()
@@ -75,12 +66,11 @@ final class Pipeline {
 
     /// En modo automático la pantalla virtual adopta la resolución física de
     /// la tablet. En tablets de alta densidad usa HiDPI para que el texto no
-    /// se vea diminuto. La captura y el codificador se adaptan solos.
+    /// se vea diminuto.
     func adapt(toTabletWidth tabletWidth: Int, height tabletHeight: Int) {
-        DispatchQueue.main.async {
-            guard let display = self.display else { return }
+        enqueueDisplayWork {
             guard self.options.autoResolution else {
-                if (tabletWidth, tabletHeight) != (self.resolution.width, self.resolution.height) {
+                if (tabletWidth, tabletHeight) != (self.options.width, self.options.height) {
                     print("   Para máxima nitidez usa: --res \(tabletWidth)x\(tabletHeight)")
                 }
                 return
@@ -91,15 +81,83 @@ final class Pipeline {
             let width = Int(Double(tabletWidth) * scale) / 4 * 4
             let height = Int(Double(tabletHeight) * scale) / 4 * 4
             let hiDPI = self.options.hiDPI || max(width, height) >= 2400
-            guard width >= 640, height >= 480, (width, height, hiDPI) != self.resolution else { return }
+            guard width >= 640, height >= 480 else { return }
 
             do {
-                try display.setResolution(width: width, height: height, hiDPI: hiDPI)
-                self.resolution = (width, height, hiDPI)
+                let replaced = self.display != nil
+                guard try await self.showDisplay(width: width, height: height, hiDPI: hiDPI) else { return }
                 let looksLike = hiDPI ? " (HiDPI, se ve como \(width / 2)x\(height / 2))" : ""
-                print("📐 Pantalla virtual ajustada a la tablet: \(width)x\(height)\(looksLike)")
+                print("🖥  Pantalla virtual \(replaced ? "recreada" : "creada") para la tablet: \(width)x\(height)\(looksLike)"
+                      + " · video \(self.captureSize.width)x\(self.captureSize.height)")
             } catch {
-                print("⚠️  No se pudo ajustar la resolución: \(error.localizedDescription)")
+                print("❌ No se pudo crear la pantalla virtual: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Mueve la pantalla virtual a otro lado de la principal y lo recuerda.
+    func place(_ position: DisplayPosition) {
+        enqueueDisplayWork {
+            self.position = position
+            self.store.position = position
+            await self.display?.place(position)
+            self.server.broadcastPosition(position)
+            print("↔️  Pantalla TabScreen \(position.label) de la principal")
+        }
+    }
+
+    // MARK: - Pantalla virtual
+
+    /// Crea (o recrea con otra resolución) la pantalla virtual, la acomoda y
+    /// empieza a capturarla. Devuelve false si ya tenía esa resolución.
+    @MainActor
+    @discardableResult
+    private func showDisplay(width: Int, height: Int, hiDPI: Bool) async throws -> Bool {
+        if let display, display.width == width, display.height == height, display.hiDPI == hiDPI {
+            return false
+        }
+        if display != nil {
+            await capturer.stop()
+            display = nil // al liberarla, macOS la quita
+            setLatestBuffer(nil)
+        }
+
+        let display = try VirtualDisplay(name: "TabScreen", width: width, height: height, hiDPI: hiDPI,
+                                         refreshRate: Double(options.fps))
+        self.display = display
+        await display.activateMode()
+        await display.place(position)
+
+        let scDisplay = try await waitForShareableDisplay(display.displayID)
+        displayPixelSize = display.currentPixelSize ?? (width, height)
+        captureSize = streamSize(for: displayPixelSize)
+        try await capturer.start(display: scDisplay, width: captureSize.width, height: captureSize.height, fps: options.fps)
+        return true
+    }
+
+    /// Tamaño del video: el de la pantalla, salvo que pase de ~1920x1200;
+    /// entonces se reduce y la tablet lo reescala. Decodificar 2880x1800 a
+    /// 60 fps en el navegador satura a muchas tablets y genera retraso.
+    private func streamSize(for size: (width: Int, height: Int)) -> (width: Int, height: Int) {
+        guard !options.fullResolution else { return size }
+        let scale = min(1, (Double(Options.maxStreamPixels) / Double(size.width * size.height)).squareRoot())
+        return (Int(Double(size.width) * scale) / 2 * 2, Int(Double(size.height) * scale) / 2 * 2)
+    }
+
+    private func setLatestBuffer(_ pixelBuffer: CVPixelBuffer?) {
+        bufferLock.lock()
+        latestBuffer = pixelBuffer
+        bufferLock.unlock()
+    }
+
+    /// Los cambios de pantalla y de ubicación se ejecutan en fila: si se
+    /// mezclan, la ubicación se calcula con el tamaño viejo de la pantalla.
+    private func enqueueDisplayWork(_ work: @escaping @MainActor () async -> Void) {
+        DispatchQueue.main.async {
+            let previous = self.displayWork
+            self.displayWork = Task { @MainActor in
+                await previous?.value
+                await work()
             }
         }
     }
@@ -180,13 +238,15 @@ final class Pipeline {
         timer.schedule(deadline: .now() + 1, repeating: 1)
         timer.setEventHandler { [weak self] in
             guard let self, let size = self.display?.currentPixelSize,
-                  size.width != self.captureSize.width || size.height != self.captureSize.height
+                  size.width != self.displayPixelSize.width || size.height != self.displayPixelSize.height
             else { return }
-            self.captureSize = size
-            print("🔁 Resolución cambiada a \(size.width)x\(size.height)")
+            self.displayPixelSize = size
+            let stream = self.streamSize(for: size)
+            self.captureSize = stream
+            print("🔁 Resolución cambiada a \(size.width)x\(size.height) (video \(stream.width)x\(stream.height))")
             Task {
                 do {
-                    try await self.capturer.update(width: size.width, height: size.height, fps: self.options.fps)
+                    try await self.capturer.update(width: stream.width, height: stream.height, fps: self.options.fps)
                 } catch {
                     print("⚠️  No se pudo actualizar la captura: \(error.localizedDescription)")
                 }
@@ -210,7 +270,8 @@ final class Pipeline {
             guard self.server.clientCount > 0 else { return }
             let fps = Double(frames) / interval
             let mbps = Double(bytes * 8) / interval / 1_000_000
-            print(String(format: "📊 %.0f fps · %.1f Mbps · %dx%d", fps, mbps, self.captureSize.width, self.captureSize.height))        }
+            print(String(format: "📊 Mac: %.0f fps · %.1f Mbps · video %dx%d", fps, mbps, self.captureSize.width, self.captureSize.height))
+        }
         timer.resume()
         timers.append(timer)
     }

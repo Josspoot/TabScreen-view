@@ -9,9 +9,15 @@ struct Options {
     var bitrateMbps: Double?
     /// Sin --res, la pantalla virtual adopta la resolución de la tablet.
     var autoResolution = true
+    var position: DisplayPosition?
+    var forgetDevices = false
+    /// Sin --full-res el video se limita a `maxStreamPixels` y la tablet lo reescala.
+    var fullResolution = false
+    var usb = true
 
     static let maxAutoWidth = 3840
     static let maxAutoHeight = 2400
+    static let maxStreamPixels = 1920 * 1200
 
     static let presets: [(name: String, width: Int, height: Int)] = [
         ("hd", 1280, 800),
@@ -32,8 +38,14 @@ struct Options {
           --hidpi             Modo Retina: la interfaz se ve a la mitad de tamaño (más nítida).
                               En modo automático se activa solo en tablets de alta resolución.
           --fps <n>           Cuadros por segundo (por defecto 60)
+          --full-res          Envía el video a la resolución completa de la pantalla (más
+                              nítido, pero más retraso en tablets de alta resolución)
           --bitrate <Mbps>    Bitrate del video (por defecto: automático según resolución)
       -p, --port <n>          Puerto HTTP (por defecto 8420)
+          --position <lado>   Dónde va la pantalla respecto a la principal: izquierda,
+                              derecha, arriba o abajo (por defecto: la última usada)
+          --forget-devices    Olvida los dispositivos de confianza y sale
+          --no-usb            No usa la conexión por cable USB (adb)
       -h, --help              Muestra esta ayuda
     """
 
@@ -78,6 +90,18 @@ struct Options {
             case "-p", "--port":
                 guard let port = UInt16(value(for: arg)), port > 0 else { fail("Puerto inválido") }
                 options.port = port
+            case "--position":
+                let v = value(for: arg)
+                guard let position = DisplayPosition(argument: v) else {
+                    fail("Posición inválida: \(v) (usa izquierda, derecha, arriba o abajo)")
+                }
+                options.position = position
+            case "--forget-devices":
+                options.forgetDevices = true
+            case "--full-res":
+                options.fullResolution = true
+            case "--no-usb":
+                options.usb = false
             case "-h", "--help":
                 print(usage)
                 exit(0)
